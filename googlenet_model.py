@@ -16,12 +16,32 @@ def get_inception_layer( inputs, conv11_size, conv33_11_size, conv33_size,
     with tf.variable_scope("pool_proj"):
         pool_proj = layers.max_pool2d( inputs, [ 3, 3 ], stride = 1 )
         pool11 = layers.conv2d( pool_proj, pool11_size, [ 1, 1 ] )
+    if tf.__version__ == '0.11.0rc0':
+        return tf.concat(3, [conv11, conv33, conv55, pool11])
     return tf.concat([conv11, conv33, conv55, pool11], 3)
+
+def aux_logit_layer( inputs, num_classes, is_training ):
+    with tf.variable_scope("pool2d"):
+        pooled = layers.avg_pool2d(inputs, [ 5, 5 ], stride = 3 )
+    with tf.variable_scope("conv11"):
+        conv11 = layers.conv2d( pooled, 128, [1, 1] )
+    with tf.variable_scope("flatten"):
+        flat = tf.reshape( conv11, [-1, 2048] )
+    with tf.variable_scope("fc"):
+        fc = layers.fully_connected( flat, 1024, activation_fn=None )
+    with tf.variable_scope("drop"):
+        drop = layers.dropout( fc, 0.3, is_training = is_training )
+    with tf.variable_scope( "linear" ):
+        linear = layers.fully_connected( drop, num_classes, activation_fn=None )
+    with tf.variable_scope("soft"):
+        soft = tf.nn.softmax( linear )
+    return soft
 
 def googlenet(inputs,
               dropout_keep_prob=0.4,
               num_classes=1000,
               is_training=True,
+              restore_logits = None,
               scope=''):
     '''
     Implementation of https://arxiv.org/pdf/1409.4842.pdf
@@ -40,12 +60,15 @@ def googlenet(inputs,
                 end_points['inception_3a'] = get_inception_layer( end_points['pool1'], 64, 96, 128, 16, 32, 32 )
 
             with tf.variable_scope("inception_3b"):
-                end_points['inception_3b'] = get_inception_layer( end_points['pool1'], 128, 128, 192, 32, 96, 64 )
+                end_points['inception_3b'] = get_inception_layer( end_points['inception_3a'], 128, 128, 192, 32, 96, 64 )
 
             end_points['pool2'] = layers.max_pool2d(end_points['inception_3b'], [ 3, 3 ], scope='pool2')
 
             with tf.variable_scope("inception_4a"):
                 end_points['inception_4a'] = get_inception_layer( end_points['pool2'], 192, 96, 208, 16, 48, 64 )
+
+            with tf.variable_scope("aux_logits_1"):
+                end_points['aux_logits_1'] = aux_logit_layer( end_points['inception_4a'], num_classes, is_training )
 
             with tf.variable_scope("inception_4b"):
                 end_points['inception_4b'] = get_inception_layer( end_points['inception_4a'], 160, 112, 224, 24, 64, 64 )
@@ -55,6 +78,9 @@ def googlenet(inputs,
 
             with tf.variable_scope("inception_4d"):
                 end_points['inception_4d'] = get_inception_layer( end_points['inception_4c'], 112, 144, 288, 32, 64, 64 )
+
+            with tf.variable_scope("aux_logits_2"):
+                end_points['aux_logits_2'] = aux_logit_layer( end_points['inception_4d'], num_classes, is_training )
 
             with tf.variable_scope("inception_4e"):
                 end_points['inception_4e'] = get_inception_layer( end_points['inception_4d'], 256, 160, 320, 32, 128, 128 )
@@ -77,4 +103,4 @@ def googlenet(inputs,
 
             end_points['predictions'] = tf.nn.softmax(end_points['logits'], name='predictions')
 
-    return end_points
+    return end_points['logits'], end_points
